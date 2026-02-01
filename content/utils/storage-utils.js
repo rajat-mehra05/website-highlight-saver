@@ -124,17 +124,41 @@ class StorageUtils {
   }
 
   /**
-   * Generate unique ID for highlights using crypto.randomUUID
+   * Generate a UUIDv4 string, using crypto.randomUUID when available
+   * and falling back to crypto.getRandomValues for older Chrome versions.
+   */
+  _generateUUID() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+    // Fallback UUIDv4 using crypto.getRandomValues
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    // Set version (4) and variant (10xx) bits per RFC 4122
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    return (
+      hex.substring(0, 8) + "-" +
+      hex.substring(8, 12) + "-" +
+      hex.substring(12, 16) + "-" +
+      hex.substring(16, 20) + "-" +
+      hex.substring(20)
+    );
+  }
+
+  /**
+   * Generate unique ID for highlights
    */
   generateId() {
-    return "highlight_" + crypto.randomUUID();
+    return "highlight_" + this._generateUUID();
   }
 
   /**
    * Generate request ID for API calls
    */
   generateRequestId() {
-    return "req_" + crypto.randomUUID();
+    return "req_" + this._generateUUID();
   }
 
   /**

@@ -329,10 +329,10 @@ class UIUtils {
   removeTemporaryHighlights() {
     document
       .querySelectorAll(".highlight-saver-scroll-target")
-      .forEach((el) => this.unwrapMark(el));
+      .forEach((el) => { this.unwrapMark(el); });
     document
       .querySelectorAll(".highlight-saver-line-highlight")
-      .forEach((el) => el.remove());
+      .forEach((el) => { el.remove(); });
   }
 
   /**

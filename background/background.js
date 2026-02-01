@@ -1,3 +1,5 @@
+importScripts("prompts.js");
+
 // Background service worker for handling storage and communication
 class BackgroundService {
   constructor() {
@@ -224,10 +226,10 @@ class BackgroundService {
         h.id.length > 0 &&
         typeof h.text === "string" &&
         h.text.length > 0 &&
-        h.text.length <= 10000 &&
+        h.text.length <= this.MAX_TEXT_LENGTH &&
         typeof h.url === "string" &&
         h.url.length > 0 &&
-        h.url.length <= 2048 &&
+        h.url.length <= this.MAX_URL_LENGTH &&
         typeof h.timestamp === "number" &&
         h.timestamp > 0
     );
@@ -427,24 +429,12 @@ class BackgroundService {
   }
 
   async callOpenAI(highlight, config) {
-    const systemPrompt = `You are a helpful AI assistant that summarizes highlighted text from web pages.
-Your task is to provide concise, accurate summaries that capture the key points and context.
-
-Guidelines:
-- Keep summaries concise (2-3 sentences max)
-- Maintain the original meaning and tone
-- Focus on the most important information
-- Use clear, readable language
-- Avoid repetition or unnecessary details`;
-
-    const userPrompt = `Please summarize this highlighted text from a webpage:
-
-Highlight: "${highlight.text}"
-Page Title: "${highlight.title}"
-Domain: "${highlight.domain}"
-Context: "${highlight.pageText || ""}"
-
-Provide a concise summary that captures the key points:`;
+    const highlightContent = [
+      `Highlight: "${highlight.text}"`,
+      `Page Title: "${highlight.title}"`,
+      `Domain: "${highlight.domain}"`,
+      `Context: "${highlight.pageText || ""}"`,
+    ].join("\n");
 
     const response = await fetch(
       "https://api.openai.com/v1/chat/completions",
@@ -457,8 +447,8 @@ Provide a concise summary that captures the key points:`;
         body: JSON.stringify({
           model: config.AI_MODEL || "gpt-4",
           messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
+            { role: "system", content: PROMPTS.SYSTEM_SUMMARY },
+            { role: "user", content: highlightContent },
           ],
           max_tokens: parseInt(config.AI_MAX_TOKENS) || 150,
           temperature: parseFloat(config.AI_TEMPERATURE) || 0.8,
@@ -474,6 +464,17 @@ Provide a concise summary that captures the key points:`;
     }
 
     const data = await response.json();
+
+    if (
+      !Array.isArray(data.choices) ||
+      data.choices.length === 0 ||
+      !data.choices[0].message ||
+      typeof data.choices[0].message.content !== "string" ||
+      data.choices[0].message.content.trim().length === 0
+    ) {
+      throw new Error("Invalid response from summarization service: unexpected response format.");
+    }
+
     return data.choices[0].message.content.trim();
   }
 }
