@@ -3,14 +3,15 @@
 
 class HighlightSaver {
   constructor() {
-    // Initialize utility classes
-    this.cacheManager = new CacheManager();
-    this.domUtils = new DOMUtils();
-    this.rangeUtils = new RangeUtils();
-    this.eventUtils = new EventUtils();
-    this.uiUtils = new UIUtils();
-    this.storageUtils = new StorageUtils();
-    this.aiUtils = new AIUtils(this.cacheManager, this.storageUtils);
+    // Resolve utility classes from namespace to avoid global pollution
+    const ns = window.__highlightSaver;
+    this.cacheManager = new ns.CacheManager();
+    this.domUtils = new ns.DOMUtils();
+    this.rangeUtils = new ns.RangeUtils();
+    this.eventUtils = new ns.EventUtils();
+    this.uiUtils = new ns.UIUtils();
+    this.storageUtils = new ns.StorageUtils();
+    this.aiUtils = new ns.AIUtils(this.cacheManager, this.storageUtils);
 
     // State management
     this.savedHighlights = new Map();
@@ -55,6 +56,9 @@ class HighlightSaver {
       onCleanup: () => this.cleanup(),
       onMessage: this.eventUtils.createMessageHandler({
         cleanup: () => this.cleanup(),
+        highlightsUpdated: () => this.refreshHighlights(),
+        scrollToHighlight: (text, textPosition, highlightId) =>
+          this.scrollToAndHighlightText(text, textPosition, highlightId),
       }),
     };
 
@@ -69,7 +73,7 @@ class HighlightSaver {
         // Remove existing popup
         this.uiUtils.removePopup();
 
-        if (selectedText.length > 0 && selectedText.length < 1000) {
+        if (selectedText.length > 0 && selectedText.length < CONSTANTS.MAX_TEXT_LENGTH) {
           // Store the selection data immediately before it gets cleared
           this.storeSelectionData(selection, selectedText);
           // Add small delay to ensure DOM is ready
@@ -207,8 +211,13 @@ class HighlightSaver {
   }
 
   markTextByContent(text, highlightId) {
-    // Find text nodes using DOMUtils
-    const textNodes = this.domUtils.findTextNodesOptimized(text);
+    // Use CacheManager to avoid full DOM walks on repeated lookups
+    const cacheKey = `${text}_${window.location.href}`;
+    let textNodes = this.cacheManager.getCachedTextNodes(cacheKey);
+    if (!textNodes) {
+      textNodes = this.domUtils.findTextNodesOptimized(text);
+      this.cacheManager.cacheTextNodes(cacheKey, textNodes);
+    }
 
     if (textNodes.length === 0) {
       return;
@@ -245,6 +254,15 @@ class HighlightSaver {
       console.error("Failed to load saved highlights:", error);
       this.savedHighlightsData = [];
     }
+  }
+
+  /**
+   * Refresh highlights from storage and re-mark them on the page.
+   * Called when the background script notifies about storage changes.
+   */
+  async refreshHighlights() {
+    await this.loadSavedHighlights();
+    this.markExistingHighlights();
   }
 
   markExistingHighlights() {
@@ -320,135 +338,73 @@ class HighlightSaver {
     );
   }
 
-  scrollToAndHighlightText(text, positionData) {
+  scrollToAndHighlightText(text, positionData, highlightId) {
     try {
-      console.log("Scrolling to and highlighting text:", text);
+      // 1. Try to find the already-rendered saved highlight span by ID
+      const savedSpan = highlightId
+        ? document.querySelector(`.highlight-saver-saved[data-highlight-id="${highlightId}"]`)
+        : null;
 
-      // Use DOMUtils to find text nodes
+      if (savedSpan) {
+        savedSpan.scrollIntoView({ behavior: "smooth", block: "center" });
+        this.uiUtils.temporarilyBorderSavedHighlight(savedSpan);
+        this.uiUtils.showFeedback("Scrolled to saved highlight", "#f59e0b");
+        return;
+      }
+
+      // 2. Try single-node text search
       const textNodes = this.domUtils.findTextNodesOptimized(text);
-      console.log("Found text nodes:", textNodes.length);
-
       if (textNodes.length > 0) {
-        // Use EventUtils to scroll to text
         const success = this.eventUtils.scrollToText(
           textNodes,
           text,
-          (range, text) => {
-            console.log("Scroll callback triggered, creating highlight");
-            // Use UIUtils to create enhanced temporary highlight for saved highlights
+          (range) => {
             this.uiUtils.temporarilyHighlightSavedText(range, text);
           }
         );
-
         if (success) {
-          this.uiUtils.showFeedback("Scrolled to highlighted text!", "#10b981");
-        } else {
-          console.warn("Scroll failed, trying fallback");
-          this.tryFallbackHighlighting(text, positionData);
+          this.uiUtils.showFeedback("Scrolled to saved highlight", "#f59e0b");
+          return;
         }
-      } else {
-        console.warn("No text nodes found, trying fallback");
-        this.tryFallbackHighlighting(text, positionData);
       }
+
+      // 3. Try cross-element text search (text spanning multiple DOM nodes)
+      const range = this.domUtils.findTextRangeAcrossElements(text);
+      if (range) {
+        const scrollTarget = range.startContainer.parentElement || range.startContainer;
+        scrollTarget.scrollIntoView({ behavior: "smooth", block: "center" });
+        setTimeout(() => {
+          this.uiUtils.createPerLineHighlight(range);
+        }, CONSTANTS.SCROLL_CALLBACK_DELAY);
+        this.uiUtils.showFeedback("Scrolled to saved highlight", "#f59e0b");
+        return;
+      }
+
+      // 4. Last resort: scroll to saved position only
+      this.scrollToPosition(positionData);
     } catch (error) {
       console.error("Failed to scroll to text:", error);
-      this.tryFallbackHighlighting(text, positionData);
+      this.scrollToPosition(positionData);
     }
   }
 
-  tryFallbackHighlighting(text, positionData) {
-    try {
-      // Create a simple text-based highlight overlay
-      this.uiUtils.createInstantFeedbackOverlay(text);
-
-      if (positionData) {
-        // Try to use position data for scrolling
-        try {
-          const position = JSON.parse(decodeURIComponent(positionData));
-          window.scrollTo({
-            top: position.top - 100,
-            behavior: "smooth",
-          });
-          this.uiUtils.showFeedback(
-            "Scrolled to approximate position",
-            "#f59e0b"
-          );
-
-          // Try to create a fallback highlight at the approximate position
-          setTimeout(() => {
-            this.createFallbackHighlightAtPosition(text, position);
-          }, 500);
-        } catch (e) {
-          console.error("Failed to parse position data:", e);
-          this.uiUtils.showFeedback(
-            "Text found but couldn't scroll",
-            "#ef4444"
-          );
-        }
-      } else {
-        this.uiUtils.showFeedback("Text not found on page", "#ef4444");
+  scrollToPosition(positionData) {
+    if (positionData) {
+      try {
+        const position =
+          typeof positionData === "string"
+            ? JSON.parse(decodeURIComponent(positionData))
+            : positionData;
+        window.scrollTo({
+          top: position.top - CONSTANTS.SCROLL_OFFSET,
+          behavior: "smooth",
+        });
+        this.uiUtils.showFeedback("Scrolled to saved highlight", "#f59e0b");
+      } catch (e) {
+        this.uiUtils.showFeedback("Failed to scroll to saved highlight", "#ef4444");
       }
-    } catch (error) {
-      console.error("Fallback highlighting failed:", error);
-    }
-  }
-
-  createFallbackHighlightAtPosition(text, position) {
-    try {
-      // Create a simple overlay at the approximate position
-      const overlay = document.createElement("div");
-      overlay.className = "highlight-saver-position-fallback";
-
-      Object.assign(overlay.style, {
-        position: "absolute",
-        top: `${position.top - 10}px`,
-        left: `${position.left - 10}px`,
-        width: `${position.width + 20}px`,
-        height: `${position.height + 20}px`,
-        backgroundColor: "rgba(34, 197, 94, 0.5)",
-        border: "3px solid #22c55e",
-        borderRadius: "6px",
-        zIndex: "2147483645",
-        pointerEvents: "none",
-        boxShadow: "0 0 30px rgba(34, 197, 94, 0.8)",
-        animation: "savedHighlightAppear 0.5s ease-out forwards",
-      });
-
-      document.body.appendChild(overlay);
-
-      // Add text label
-      const label = document.createElement("div");
-      label.textContent = `"${text.substring(0, 30)}${
-        text.length > 30 ? "..." : ""
-      }"`;
-      Object.assign(label.style, {
-        position: "absolute",
-        bottom: "-30px",
-        left: "0",
-        backgroundColor: "rgba(34, 197, 94, 0.9)",
-        color: "white",
-        padding: "4px 8px",
-        borderRadius: "4px",
-        fontSize: "12px",
-        whiteSpace: "nowrap",
-        maxWidth: "200px",
-        overflow: "hidden",
-      });
-      overlay.appendChild(label);
-
-      // Remove after 4 seconds
-      setTimeout(() => {
-        if (overlay.parentNode) {
-          overlay.style.opacity = "0";
-          setTimeout(() => {
-            if (overlay.parentNode) {
-              overlay.remove();
-            }
-          }, 300);
-        }
-      }, 4000);
-    } catch (error) {
-      console.error("Failed to create fallback highlight at position:", error);
+    } else {
+      this.uiUtils.showFeedback("Failed to scroll to saved highlight", "#ef4444");
     }
   }
 

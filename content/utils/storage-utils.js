@@ -124,19 +124,17 @@ class StorageUtils {
   }
 
   /**
-   * Generate unique ID for highlights
+   * Generate unique ID for highlights using crypto.randomUUID
    */
   generateId() {
-    return (
-      "highlight_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9)
-    );
+    return "highlight_" + crypto.randomUUID();
   }
 
   /**
    * Generate request ID for API calls
    */
   generateRequestId() {
-    return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    return "req_" + crypto.randomUUID();
   }
 
   /**
@@ -201,113 +199,7 @@ class StorageUtils {
     return typeof chrome !== "undefined" && chrome.runtime;
   }
 
-  /**
-   * Get current tab information (if available)
-   */
-  async getCurrentTabInfo() {
-    if (!this.isChromeExtensionContext()) {
-      return null;
-    }
-
-    try {
-      const response = await this.sendMessageToBackground({
-        action: "getCurrentTabInfo",
-      });
-      return response.tabInfo || null;
-    } catch (error) {
-      console.warn("Failed to get tab info:", error);
-      return null;
-    }
-  }
-
-  /**
-   * Update highlight in storage
-   */
-  async updateHighlight(highlightId, updates) {
-    return await this.sendMessageToBackground({
-      action: "updateHighlight",
-      highlightId: highlightId,
-      updates: updates,
-    });
-  }
-
-  /**
-   * Delete highlight from storage
-   */
-  async deleteHighlight(highlightId) {
-    return await this.sendMessageToBackground({
-      action: "deleteHighlight",
-      highlightId: highlightId,
-    });
-  }
-
-  /**
-   * Get highlights for current URL
-   */
-  async getHighlightsForCurrentUrl() {
-    const currentUrl = window.location.href;
-    const allHighlights = await this.loadHighlights();
-    return allHighlights.filter((h) => h.url === currentUrl);
-  }
-
-  /**
-   * Export highlights as JSON
-   */
-  async exportHighlights() {
-    const highlights = await this.loadHighlights();
-    return JSON.stringify(highlights, null, 2);
-  }
-
-  /**
-   * Import highlights from JSON
-   */
-  async importHighlights(jsonData) {
-    try {
-      const highlights = JSON.parse(jsonData);
-
-      // Validate the data structure
-      if (!Array.isArray(highlights)) {
-        throw new Error("Invalid data format: expected array");
-      }
-
-      // Import each highlight
-      const results = [];
-      for (const highlight of highlights) {
-        try {
-          const result = await this.saveHighlight(highlight);
-          results.push(result);
-        } catch (error) {
-          console.error("Failed to import highlight:", error);
-          results.push({ success: false, error: error.message });
-        }
-      }
-
-      return results;
-    } catch (error) {
-      console.error("Failed to import highlights:", error);
-      throw error;
-    }
-  }
-
-  /**
-   * Get storage usage statistics
-   */
-  async getStorageStats() {
-    return await this.sendMessageToBackground({
-      action: "getStorageStats",
-    });
-  }
-
-  /**
-   * Clean up old highlights (based on age or count)
-   */
-  async cleanupOldHighlights(options = {}) {
-    return await this.sendMessageToBackground({
-      action: "cleanupHighlights",
-      options: options,
-    });
-  }
 }
 
-// Make StorageUtils globally available
-window.StorageUtils = StorageUtils;
+window.__highlightSaver = window.__highlightSaver || {};
+window.__highlightSaver.StorageUtils = StorageUtils;

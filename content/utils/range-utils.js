@@ -234,7 +234,7 @@ class RangeUtils {
         startOffset: range.startOffset,
         endContainer: range.endContainer,
         endOffset: range.endOffset,
-        clonedContents: range.cloneContents(),
+        // clonedContents removed: deep-clones DOM fragment but is never read, wastes memory
       },
       surroundingText: this.getSurroundingTextFromRange(range),
       textPosition: textPosition,
@@ -348,8 +348,8 @@ class RangeUtils {
    */
   getNodeContext(node, textIndex, textLength) {
     const content = node.textContent;
-    const start = Math.max(0, textIndex - 50);
-    const end = Math.min(content.length, textIndex + textLength + 50);
+    const start = Math.max(0, textIndex - CONSTANTS.CONTEXT_CHARS);
+    const end = Math.min(content.length, textIndex + textLength + CONSTANTS.CONTEXT_CHARS);
     return content.substring(start, end);
   }
 
@@ -371,5 +371,5 @@ class RangeUtils {
   }
 }
 
-// Make RangeUtils globally available
-window.RangeUtils = RangeUtils;
+window.__highlightSaver = window.__highlightSaver || {};
+window.__highlightSaver.RangeUtils = RangeUtils;

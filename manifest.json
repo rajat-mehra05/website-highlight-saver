@@ -4,13 +4,9 @@
   "version": "1.0.0",
   "description": "Highlight and save text from any webpage with local storage",
   "permissions": [
-    "storage",
-    "activeTab",
-    "scripting",
-    "tabs"
+    "storage"
   ],
   "host_permissions": [
-    "http://*/*",
     "https://*/*"
   ],
   "action": {
@@ -26,6 +22,7 @@
     {
       "matches": ["https://*/*"],
       "js": [
+        "content/utils/constants.js",
         "content/utils/cache-manager.js",
         "content/utils/dom-utils.js",
         "content/utils/range-utils.js",
@@ -47,11 +44,5 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  },
-  "web_accessible_resources": [
-    {
-      "resources": ["env.config"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  }
 }

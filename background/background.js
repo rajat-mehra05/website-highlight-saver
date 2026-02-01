@@ -1,7 +1,56 @@
 // Background service worker for handling storage and communication
 class BackgroundService {
   constructor() {
+    // Storage operation lock to prevent TOCTOU race conditions
+    this._storageLock = Promise.resolve();
+    // Rate limiting for OpenAI API calls
+    this._apiCallTimestamps = [];
+
+    // Configuration constants (mirrors content/utils/constants.js for the service worker context)
+    this.RATE_LIMIT_MAX = 5;
+    this.RATE_LIMIT_WINDOW = 60000;
+    this.MAX_HIGHLIGHTS = 1000;
+    this.MAX_TEXT_LENGTH = 1000;
+    this.MAX_URL_LENGTH = 500;
+    this.MAX_TITLE_LENGTH = 200;
+    this.MAX_DOMAIN_LENGTH = 100;
+    this.SUMMARY_CACHE_TTL = 300000;
+    this.MAX_SUMMARY_CACHE = 50;
     this.init();
+  }
+
+  /**
+   * Acquire a lock for storage operations to prevent race conditions.
+   * All storage read-modify-write operations go through this lock.
+   */
+  _withStorageLock(fn) {
+    let release;
+    const newLock = new Promise((resolve) => {
+      release = resolve;
+    });
+    const previous = this._storageLock;
+    this._storageLock = newLock;
+    return previous.then(() => fn()).finally(release);
+  }
+
+  /**
+   * Check rate limit before making an API call.
+   * Throws if rate limit exceeded.
+   */
+  _checkRateLimit() {
+    const now = Date.now();
+    // Remove timestamps outside the window
+    this._apiCallTimestamps = this._apiCallTimestamps.filter(
+      (t) => now - t < this.RATE_LIMIT_WINDOW
+    );
+    if (this._apiCallTimestamps.length >= this.RATE_LIMIT_MAX) {
+      const oldestCall = this._apiCallTimestamps[0];
+      const waitTime = Math.ceil((this.RATE_LIMIT_WINDOW - (now - oldestCall)) / 1000);
+      throw new Error(
+        `Rate limit exceeded. Please wait ${waitTime} seconds before requesting another summary.`
+      );
+    }
+    this._apiCallTimestamps.push(now);
   }
 
   init() {
@@ -20,40 +69,59 @@ class BackgroundService {
   async handleMessage(request, sender, sendResponse) {
     try {
       switch (request.action) {
-        case "saveHighlight":
+        case "saveHighlight": {
           const savedHighlight = await this.saveHighlight(request.highlight);
           sendResponse({ success: true, highlight: savedHighlight });
           break;
+        }
 
-        case "getHighlights":
+        case "getHighlights": {
           const highlights = await this.getHighlights();
           sendResponse({ success: true, highlights });
           break;
+        }
 
-        case "deleteHighlight":
+        case "deleteHighlight": {
           await this.deleteHighlight(request.id);
           sendResponse({ success: true });
           break;
+        }
 
-        case "clearAllHighlights":
+        case "clearAllHighlights": {
           await this.clearAllHighlights();
           sendResponse({ success: true });
           break;
+        }
 
-        case "exportHighlights":
+        case "exportHighlights": {
           const exportData = await this.exportHighlights();
           sendResponse({ success: true, data: exportData });
           break;
+        }
 
-        case "importHighlights":
-          await this.importHighlights(request.highlights);
-          sendResponse({ success: true });
+        case "importHighlights": {
+          const result = await this.importHighlights(request.highlights, request.merge);
+          sendResponse({ success: true, ...result });
           break;
+        }
 
-        case "summarizeHighlight":
+        case "summarizeHighlight": {
           const summary = await this.summarizeHighlight(request);
           sendResponse({ success: true, summary });
           break;
+        }
+
+        case "saveConfig": {
+          await chrome.storage.local.set({ aiConfig: request.config });
+          sendResponse({ success: true });
+          break;
+        }
+
+        case "getConfig": {
+          const config = await this.getConfig();
+          sendResponse({ success: true, config });
+          break;
+        }
 
         default:
           console.warn("Unknown action:", request.action);
@@ -63,7 +131,7 @@ class BackgroundService {
       console.error("Background service error:", error);
       sendResponse({
         success: false,
-        error: error.message || "Unknown error occurred",
+        error: error.message || "An unexpected error occurred",
       });
     }
   }
@@ -73,46 +141,29 @@ class BackgroundService {
       throw new Error("Invalid highlight data: missing required fields");
     }
 
-    try {
-      // Get current highlights
+    return this._withStorageLock(async () => {
       const result = await chrome.storage.local.get(["highlights"]);
       const highlights = result.highlights || [];
 
-      // Add timestamp if not present
       if (!highlight.timestamp) {
         highlight.timestamp = Date.now();
       }
 
-      // Add new highlight to beginning
       highlights.unshift(highlight);
 
-      // Limit to 1000 highlights to prevent storage issues
-      if (highlights.length > 1000) {
-        highlights.splice(1000);
+      if (highlights.length > this.MAX_HIGHLIGHTS) {
+        highlights.splice(this.MAX_HIGHLIGHTS);
       }
 
-      // Save back to storage
       await chrome.storage.local.set({ highlights });
-
-      // Notify all tabs about the new highlight
       this.notifyTabsAboutUpdate();
-
       return highlight;
-    } catch (error) {
-      console.error("Failed to save highlight:", error);
-      throw new Error("Failed to save highlight: " + error.message);
-    }
+    });
   }
 
   async getHighlights() {
-    try {
-      const result = await chrome.storage.local.get(["highlights"]);
-      const highlights = result.highlights || [];
-      return highlights;
-    } catch (error) {
-      console.error("Failed to get highlights:", error);
-      throw new Error("Failed to retrieve highlights: " + error.message);
-    }
+    const result = await chrome.storage.local.get(["highlights"]);
+    return result.highlights || [];
   }
 
   async deleteHighlight(id) {
@@ -120,139 +171,127 @@ class BackgroundService {
       throw new Error("Highlight ID is required");
     }
 
-    try {
+    return this._withStorageLock(async () => {
       const result = await chrome.storage.local.get(["highlights"]);
       const highlights = result.highlights || [];
-      const initialCount = highlights.length;
-
       const filtered = highlights.filter((h) => h.id !== id);
-
-      if (filtered.length === initialCount) {
-        console.warn("No highlight found with ID:", id);
-      }
-
       await chrome.storage.local.set({ highlights: filtered });
-
-      // Notify all tabs about the update
       this.notifyTabsAboutUpdate();
-
       return true;
-    } catch (error) {
-      console.error("Failed to delete highlight:", error);
-      throw new Error("Failed to delete highlight: " + error.message);
-    }
+    });
   }
 
   async clearAllHighlights() {
-    try {
+    return this._withStorageLock(async () => {
       await chrome.storage.local.set({ highlights: [] });
-
-      // Notify all tabs about the update
       this.notifyTabsAboutUpdate();
-
       return true;
-    } catch (error) {
-      console.error("Failed to clear highlights:", error);
-      throw new Error("Failed to clear highlights: " + error.message);
-    }
+    });
   }
 
   async exportHighlights() {
-    try {
-      const highlights = await this.getHighlights();
-      const exportData = {
-        highlights,
-        exportDate: new Date().toISOString(),
-        version: "1.0.0",
-      };
-      return exportData;
-    } catch (error) {
-      console.error("Failed to export highlights:", error);
-      throw new Error("Failed to export highlights: " + error.message);
-    }
+    const highlights = await this.getHighlights();
+    return {
+      highlights,
+      exportDate: new Date().toISOString(),
+      version: "1.0.0",
+    };
   }
 
-  async importHighlights(importData) {
-    try {
-      let highlights = [];
+  async importHighlights(importData, merge = false) {
+    let incoming = [];
 
-      if (Array.isArray(importData)) {
-        // Direct array import
-        highlights = importData;
-      } else if (
-        importData.highlights &&
-        Array.isArray(importData.highlights)
-      ) {
-        // Structured import
-        highlights = importData.highlights;
-      } else {
-        throw new Error(
-          "Invalid import format - expected array or object with highlights property"
-        );
-      }
-
-      // Validate highlights
-      const validHighlights = highlights.filter(
-        (h) => h && h.id && h.text && h.url && h.timestamp
+    if (Array.isArray(importData)) {
+      incoming = importData;
+    } else if (
+      importData &&
+      importData.highlights &&
+      Array.isArray(importData.highlights)
+    ) {
+      incoming = importData.highlights;
+    } else {
+      throw new Error(
+        "Invalid import format - expected array or object with highlights property"
       );
-
-      if (validHighlights.length !== highlights.length) {
-        console.warn(
-          `Filtered out ${
-            highlights.length - validHighlights.length
-          } invalid highlights`
-        );
-      }
-
-      await chrome.storage.local.set({ highlights: validHighlights });
-
-      // Notify all tabs about the update
-      this.notifyTabsAboutUpdate();
-
-      return true;
-    } catch (error) {
-      console.error("Failed to import highlights:", error);
-      throw new Error("Failed to import highlights: " + error.message);
     }
+
+    // Validate each highlight has required fields with correct types, non-empty values, and sane sizes
+    const validHighlights = incoming.filter(
+      (h) =>
+        h &&
+        typeof h === "object" &&
+        typeof h.id === "string" &&
+        h.id.length > 0 &&
+        typeof h.text === "string" &&
+        h.text.length > 0 &&
+        h.text.length <= 10000 &&
+        typeof h.url === "string" &&
+        h.url.length > 0 &&
+        h.url.length <= 2048 &&
+        typeof h.timestamp === "number" &&
+        h.timestamp > 0
+    );
+
+    const skipped = incoming.length - validHighlights.length;
+    if (skipped > 0) {
+      console.warn(`Filtered out ${skipped} invalid highlights during import`);
+    }
+
+    return this._withStorageLock(async () => {
+      if (merge) {
+        // Merge: add new highlights, skip duplicates by ID
+        const result = await chrome.storage.local.get(["highlights"]);
+        const existing = result.highlights || [];
+        const existingIds = new Set(existing.map((h) => h.id));
+        const newHighlights = validHighlights.filter(
+          (h) => !existingIds.has(h.id)
+        );
+        const merged = [...newHighlights, ...existing];
+
+        if (merged.length > this.MAX_HIGHLIGHTS) {
+          merged.splice(this.MAX_HIGHLIGHTS);
+        }
+
+        await chrome.storage.local.set({ highlights: merged });
+        this.notifyTabsAboutUpdate();
+        return { imported: newHighlights.length, skippedDuplicates: validHighlights.length - newHighlights.length, skippedInvalid: skipped };
+      } else {
+        // Replace mode
+        await chrome.storage.local.set({ highlights: validHighlights });
+        this.notifyTabsAboutUpdate();
+        return { imported: validHighlights.length, skippedInvalid: skipped };
+      }
+    });
   }
 
   notifyTabsAboutUpdate() {
-    // Notify all tabs that highlights have been updated
     chrome.tabs.query({}, (tabs) => {
+      if (!tabs) return;
       tabs.forEach((tab) => {
-        try {
-          chrome.tabs
-            .sendMessage(tab.id, {
-              action: "highlightsUpdated",
-            })
-            .catch((error) => {
-              // Ignore errors for tabs that don't have content scripts
-            });
-        } catch (error) {
-          // Ignore errors
-        }
+        if (!tab.id) return;
+        chrome.tabs
+          .sendMessage(tab.id, { action: "highlightsUpdated" })
+          .catch(() => {
+            // Ignore errors for tabs without content scripts
+          });
       });
     });
   }
 
   handleInstallation(details) {
     if (details.reason === "install") {
-      // Initialize storage on first install
       chrome.storage.local.set({ highlights: [] });
     } else if (details.reason === "update") {
-      // Perform any migration if needed
       this.performMigrationIfNeeded();
     }
   }
 
   async performMigrationIfNeeded() {
     try {
-      // Check if migration is needed and perform it
       const result = await chrome.storage.local.get(["highlights", "version"]);
       const currentVersion = chrome.runtime.getManifest().version;
 
       if (!result.version || result.version !== currentVersion) {
-        // Perform any necessary data migrations here
         await chrome.storage.local.set({ version: currentVersion });
       }
     } catch (error) {
@@ -260,90 +299,37 @@ class BackgroundService {
     }
   }
 
-  // Utility method to get storage usage
-  async getStorageUsage() {
-    try {
-      const result = await chrome.storage.local.get(null);
-      const dataSize = JSON.stringify(result).length;
-      const usage = {
-        bytes: dataSize,
-        kilobytes: Math.round((dataSize / 1024) * 100) / 100,
-        megabytes: Math.round((dataSize / (1024 * 1024)) * 100) / 100,
-        limit: 5 * 1024 * 1024, // 5MB limit
-        percentage:
-          Math.round((dataSize / (5 * 1024 * 1024)) * 100 * 100) / 100,
-      };
-      return usage;
-    } catch (error) {
-      console.error("Failed to get storage usage:", error);
-      return null;
-    }
-  }
-
-  // Cleanup old highlights (optional feature)
-  async cleanupOldHighlights(daysToKeep = 365) {
-    try {
-      const highlights = await this.getHighlights();
-      const cutoffDate = Date.now() - daysToKeep * 24 * 60 * 60 * 1000;
-
-      const filtered = highlights.filter((h) => h.timestamp > cutoffDate);
-
-      if (filtered.length !== highlights.length) {
-        await chrome.storage.local.set({ highlights: filtered });
-        this.notifyTabsAboutUpdate();
-      }
-
-      return filtered.length;
-    } catch (error) {
-      console.error("Failed to cleanup old highlights:", error);
-      throw new Error("Failed to cleanup old highlights: " + error.message);
-    }
-  }
-
   // Summarize highlight functionality
   async summarizeHighlight(request) {
-    try {
-      // Validate request
-      if (!request.requestId || !request.highlight || !request.cacheKey) {
-        throw new Error("Invalid request: missing required fields");
-      }
-
-      // Check cache first
-      const cachedSummary = await this.getCachedSummary(request.cacheKey);
-      if (cachedSummary) {
-        return cachedSummary;
-      }
-
-      // Validate and sanitize highlight data
-      const sanitizedHighlight = this.sanitizeHighlight(request.highlight);
-
-      // Get configuration
-      const config = await this.getConfig();
-
-      // Perform OpenAI API call
-      const summary = await this.callOpenAI(sanitizedHighlight, config);
-
-      // Cache the result
-      await this.cacheSummary(request.cacheKey, summary);
-
-      return summary;
-    } catch (error) {
-      console.error("Summarize highlight failed:", error);
-      throw new Error("Failed to summarize: " + error.message);
+    if (!request.requestId || !request.highlight || !request.cacheKey) {
+      throw new Error("Invalid request: missing required fields");
     }
+
+    // Check cache first
+    const cachedSummary = await this.getCachedSummary(request.cacheKey);
+    if (cachedSummary) {
+      return cachedSummary;
+    }
+
+    // Rate limit check
+    this._checkRateLimit();
+
+    const sanitizedHighlight = this.sanitizeHighlight(request.highlight);
+    const config = await this.getConfig();
+    const summary = await this.callOpenAI(sanitizedHighlight, config);
+    await this.cacheSummary(request.cacheKey, summary);
+
+    return summary;
   }
 
   async getCachedSummary(cacheKey) {
     try {
       const result = await chrome.storage.local.get(["summaryCache"]);
       const cache = result.summaryCache || {};
-
       const cached = cache[cacheKey];
-      if (cached && Date.now() - cached.timestamp < 300000) {
-        // 5 minutes
+      if (cached && Date.now() - cached.timestamp < this.SUMMARY_CACHE_TTL) {
         return cached.summary;
       }
-
       return null;
     } catch (error) {
       console.error("Failed to get cached summary:", error);
@@ -356,15 +342,12 @@ class BackgroundService {
       const result = await chrome.storage.local.get(["summaryCache"]);
       const cache = result.summaryCache || {};
 
-      // Limit cache size
       const cacheKeys = Object.keys(cache);
-      if (cacheKeys.length >= 50) {
-        // Max 50 cached summaries
-        // Remove oldest entries
+      if (cacheKeys.length >= this.MAX_SUMMARY_CACHE) {
         const sortedKeys = cacheKeys.sort(
           (a, b) => (cache[a].timestamp || 0) - (cache[b].timestamp || 0)
         );
-        const toDelete = sortedKeys.slice(0, cacheKeys.length - 49);
+        const toDelete = sortedKeys.slice(0, cacheKeys.length - (this.MAX_SUMMARY_CACHE - 1));
         toDelete.forEach((key) => delete cache[key]);
       }
 
@@ -380,40 +363,28 @@ class BackgroundService {
   }
 
   sanitizeHighlight(highlight) {
-    // Validate and sanitize highlight data
     if (!highlight || typeof highlight !== "object") {
       throw new Error("Invalid highlight data");
     }
 
     return {
-      text: String(highlight.text || "").substring(0, 1000),
-      url: String(highlight.url || "").substring(0, 500),
-      title: String(highlight.title || "").substring(0, 200),
-      domain: String(highlight.domain || "").substring(0, 100),
+      text: String(highlight.text || "").substring(0, this.MAX_TEXT_LENGTH),
+      url: String(highlight.url || "").substring(0, this.MAX_URL_LENGTH),
+      title: String(highlight.title || "").substring(0, this.MAX_TITLE_LENGTH),
+      domain: String(highlight.domain || "").substring(0, this.MAX_DOMAIN_LENGTH),
     };
   }
 
   async getConfig() {
     try {
-      // Load config from env.config file
-      const response = await fetch(chrome.runtime.getURL("env.config"));
-      const envText = await response.text();
-
-      const config = {};
-      const lines = envText.split("\n");
-
-      for (const line of lines) {
-        const trimmedLine = line.trim();
-        if (trimmedLine && !trimmedLine.startsWith("#")) {
-          const [key, value] = trimmedLine.split("=");
-          if (key && value) {
-            config[key.trim()] = value.trim();
-          }
-        }
-      }
+      // Load config from chrome.storage.local (set via settings UI or initial setup)
+      const result = await chrome.storage.local.get(["aiConfig"]);
+      const config = result.aiConfig || {};
 
       if (!config.OPENAI_API_KEY) {
-        throw new Error("OpenAI API key not found in env.config");
+        throw new Error(
+          "OpenAI API key not configured. Please set it in the extension settings."
+        );
       }
 
       return config;
@@ -424,9 +395,7 @@ class BackgroundService {
   }
 
   async callOpenAI(highlight, config) {
-    try {
-      // Format the prompt using the SUMMARIZE_HIGHLIGHT template
-      const systemPrompt = `You are a helpful AI assistant that summarizes highlighted text from web pages. 
+    const systemPrompt = `You are a helpful AI assistant that summarizes highlighted text from web pages.
 Your task is to provide concise, accurate summaries that capture the key points and context.
 
 Guidelines:
@@ -436,7 +405,7 @@ Guidelines:
 - Use clear, readable language
 - Avoid repetition or unnecessary details`;
 
-      const userPrompt = `Please summarize this highlighted text from a webpage:
+    const userPrompt = `Please summarize this highlighted text from a webpage:
 
 Highlight: "${highlight.text}"
 Page Title: "${highlight.title}"
@@ -445,78 +414,35 @@ Context: "${highlight.pageText || ""}"
 
 Provide a concise summary that captures the key points:`;
 
-      const response = await fetch(
-        "https://api.openai.com/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${config.OPENAI_API_KEY}`,
-          },
-          body: JSON.stringify({
-            model: config.AI_MODEL || "gpt-4",
-            messages: [
-              {
-                role: "system",
-                content: systemPrompt,
-              },
-              { role: "user", content: userPrompt },
-            ],
-            max_tokens: parseInt(config.AI_MAX_TOKENS) || 150,
-            temperature: parseFloat(config.AI_TEMPERATURE) || 0.8,
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(
-          `OpenAI API error: ${response.status} - ${
-            errorData.error?.message || "Unknown error"
-          }`
-        );
+    const response = await fetch(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: config.AI_MODEL || "gpt-4",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          max_tokens: parseInt(config.AI_MAX_TOKENS) || 150,
+          temperature: parseFloat(config.AI_TEMPERATURE) || 0.8,
+        }),
       }
+    );
 
-      const data = await response.json();
-      return data.choices[0].message.content.trim();
-    } catch (error) {
-      console.error("OpenAI API call failed:", error);
-      throw new Error("API call failed: " + error.message);
+    if (!response.ok) {
+      // Log the full error internally but show a generic message to the user
+      const errorData = await response.json().catch(() => ({}));
+      console.error("OpenAI API error details:", response.status, errorData);
+      throw new Error("Summarization service returned an error. Please try again later.");
     }
-  }
 
-  // Health check method
-  async healthCheck() {
-    try {
-      // Test storage
-      await chrome.storage.local.set({ healthCheck: Date.now() });
-      const result = await chrome.storage.local.get(["healthCheck"]);
-
-      if (!result.healthCheck) {
-        throw new Error("Storage test failed");
-      }
-
-      // Clean up test data
-      await chrome.storage.local.remove(["healthCheck"]);
-
-      // Get current stats
-      const highlights = await this.getHighlights();
-      const usage = await this.getStorageUsage();
-
-      return {
-        status: "healthy",
-        highlightsCount: highlights.length,
-        storageUsage: usage,
-        timestamp: Date.now(),
-      };
-    } catch (error) {
-      console.error("Health check failed:", error);
-      return {
-        status: "error",
-        error: error.message,
-        timestamp: Date.now(),
-      };
-    }
+    const data = await response.json();
+    return data.choices[0].message.content.trim();
   }
 }
 

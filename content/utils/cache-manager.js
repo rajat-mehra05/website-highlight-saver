@@ -312,5 +312,6 @@ class CacheManager {
   }
 }
 
-// Make CacheManager globally available
-window.CacheManager = CacheManager;
+// Namespaced under __highlightSaver — no direct window.ClassName export
+window.__highlightSaver = window.__highlightSaver || {};
+window.__highlightSaver.CacheManager = CacheManager;
