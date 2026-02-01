@@ -186,26 +186,50 @@ class EventUtils {
   }
 
   /**
-   * Scroll to text with smooth animation
+   * Scroll to text with smooth animation.
+   * When textPosition is provided, picks the occurrence closest to it.
    */
-  scrollToText(textNodes, text, callback) {
+  scrollToText(textNodes, text, callback, textPosition = null) {
     if (textNodes.length === 0) return false;
 
-    // Find the best match
     let bestMatch = textNodes[0];
-    let bestScore = 0;
 
-    textNodes.forEach((textNode) => {
-      const content = textNode.textContent;
-      const index = content.indexOf(text);
-      if (index !== -1) {
-        const score = text.length / content.length;
-        if (score > bestScore) {
-          bestScore = score;
-          bestMatch = textNode;
+    if (textPosition) {
+      // Use position proximity to pick the right occurrence
+      let bestDistance = Infinity;
+      textNodes.forEach((textNode) => {
+        const content = textNode.textContent;
+        const index = content.indexOf(text);
+        if (index === -1) return;
+        try {
+          const range = document.createRange();
+          range.setStart(textNode, index);
+          range.setEnd(textNode, index + text.length);
+          const rect = range.getBoundingClientRect();
+          const top = rect.top + window.scrollY;
+          const left = rect.left + window.scrollX;
+          const distance = Math.abs(top - textPosition.top) + Math.abs(left - textPosition.left);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestMatch = textNode;
+          }
+        } catch { /* skip */ }
+      });
+    } else {
+      // Fallback: pick node where the text takes up the most of the content
+      let bestScore = 0;
+      textNodes.forEach((textNode) => {
+        const content = textNode.textContent;
+        const index = content.indexOf(text);
+        if (index !== -1) {
+          const score = text.length / content.length;
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = textNode;
+          }
         }
-      }
-    });
+      });
+    }
 
     // Create range and scroll to it
     try {

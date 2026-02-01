@@ -17,6 +17,7 @@ class HighlightSaver {
     this.savedHighlights = new Map();
     this.pendingHighlight = null;
     this.savedHighlightsData = [];
+    this.isSummarizing = false;
 
     this.init();
   }
@@ -70,6 +71,9 @@ class HighlightSaver {
     this.eventUtils.handleTextSelection(
       event,
       (selection, selectedText, event) => {
+        // Don't recreate the popup while summarization is in progress
+        if (this.isSummarizing) return;
+
         // Remove existing popup
         this.uiUtils.removePopup();
 
@@ -131,10 +135,15 @@ class HighlightSaver {
   }
 
   async handleSummarizeClick() {
-    await this.aiUtils.handleSummarizeRequest(
-      this.pendingHighlight,
-      this.uiUtils
-    );
+    this.isSummarizing = true;
+    try {
+      await this.aiUtils.handleSummarizeRequest(
+        this.pendingHighlight,
+        this.uiUtils
+      );
+    } finally {
+      this.isSummarizing = false;
+    }
   }
 
   async saveHighlightFromPending() {
@@ -352,6 +361,13 @@ class HighlightSaver {
         return;
       }
 
+      // Parse position for disambiguation
+      const position = positionData
+        ? (typeof positionData === "string"
+          ? JSON.parse(decodeURIComponent(positionData))
+          : positionData)
+        : null;
+
       // 2. Try single-node text search
       const textNodes = this.domUtils.findTextNodesOptimized(text);
       if (textNodes.length > 0) {
@@ -360,7 +376,8 @@ class HighlightSaver {
           text,
           (range) => {
             this.uiUtils.temporarilyHighlightSavedText(range, text);
-          }
+          },
+          position
         );
         if (success) {
           this.uiUtils.showFeedback("Scrolled to saved highlight", "#f59e0b");
@@ -369,7 +386,7 @@ class HighlightSaver {
       }
 
       // 3. Try cross-element text search (text spanning multiple DOM nodes)
-      const range = this.domUtils.findTextRangeAcrossElements(text);
+      const range = this.domUtils.findTextRangeAcrossElements(text, document.body, position);
       if (range) {
         const scrollTarget = range.startContainer.parentElement || range.startContainer;
         scrollTarget.scrollIntoView({ behavior: "smooth", block: "center" });

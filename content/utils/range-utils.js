@@ -102,7 +102,6 @@ class RangeUtils {
 
       // Check if range can be safely surrounded
       if (!this.canSurroundRange(range)) {
-        console.warn("Range cannot be safely surrounded, using fallback");
         return this.markRangeWithFallback(range, highlightId, domUtils);
       }
 
@@ -119,9 +118,7 @@ class RangeUtils {
       span.title = "Saved highlight - Click to view in extension";
 
       return span;
-    } catch (rangeError) {
-      console.warn("surroundContents failed, trying fallback:", rangeError);
-      // Fallback: manually extract and wrap content
+    } catch {
       return this.markRangeWithFallback(range, highlightId, domUtils);
     }
   }
@@ -172,9 +169,9 @@ class RangeUtils {
         throw new Error("Range invalid for fallback marking");
       }
 
-      // Extract the content from the range
-      const contents = range.extractContents();
+      // Capture text before extracting (extractContents collapses the range)
       const textContent = range.toString();
+      const contents = range.extractContents();
 
       // Create the span wrapper
       const span = domUtils.createHighlightSpan({

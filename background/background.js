@@ -379,7 +379,15 @@ class BackgroundService {
     try {
       // Load config from chrome.storage.local (set via settings UI or initial setup)
       const result = await chrome.storage.local.get(["aiConfig"]);
-      const config = result.aiConfig || {};
+      let config = result.aiConfig || {};
+
+      // If storage is empty, try loading from .env.config bundled with the extension
+      if (!config.OPENAI_API_KEY) {
+        config = await this.loadConfigFromFile();
+        if (config.OPENAI_API_KEY) {
+          await chrome.storage.local.set({ aiConfig: config });
+        }
+      }
 
       if (!config.OPENAI_API_KEY) {
         throw new Error(
@@ -391,6 +399,30 @@ class BackgroundService {
     } catch (error) {
       console.error("Failed to load config:", error);
       throw new Error("Configuration error: " + error.message);
+    }
+  }
+
+  async loadConfigFromFile() {
+    try {
+      const url = chrome.runtime.getURL(".env.config");
+      const response = await fetch(url);
+      if (!response.ok) return {};
+
+      const text = await response.text();
+      const config = {};
+      for (const line of text.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const eqIndex = trimmed.indexOf("=");
+        if (eqIndex === -1) continue;
+        const key = trimmed.substring(0, eqIndex).trim();
+        const value = trimmed.substring(eqIndex + 1).trim();
+        if (key && value) config[key] = value;
+      }
+      return config;
+    } catch (error) {
+      console.error("Failed to load .env.config:", error);
+      return {};
     }
   }
 

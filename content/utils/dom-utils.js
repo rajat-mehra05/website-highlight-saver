@@ -175,8 +175,10 @@ class DOMUtils {
    * Find a Range for text that may span across multiple DOM elements.
    * Walks all text nodes, concatenates their content, locates the search
    * string, then maps the character offsets back to actual DOM nodes.
+   * When textPosition is provided and multiple occurrences exist,
+   * picks the one closest to the saved position.
    */
-  findTextRangeAcrossElements(searchText, root = document.body) {
+  findTextRangeAcrossElements(searchText, root = document.body, textPosition = null) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const nodes = [];
     let concat = "";
@@ -187,37 +189,72 @@ class DOMUtils {
       concat += node.textContent;
     }
 
-    const index = concat.indexOf(searchText);
-    if (index === -1) return null;
+    // Find all occurrences of the search text
+    const occurrences = [];
+    let searchFrom = 0;
+    while (searchFrom < concat.length) {
+      const index = concat.indexOf(searchText, searchFrom);
+      if (index === -1) break;
+      occurrences.push(index);
+      searchFrom = index + 1;
+    }
 
-    const endIndex = index + searchText.length;
-    let startNode, startOffset, endNode, endOffset;
+    if (occurrences.length === 0) return null;
 
-    for (const { node, start } of nodes) {
-      const nodeEnd = start + node.textContent.length;
+    // Build a range for a given character index
+    const buildRange = (index) => {
+      const endIndex = index + searchText.length;
+      let startNode, startOffset, endNode, endOffset;
 
-      if (!startNode && index < nodeEnd) {
-        startNode = node;
-        startOffset = index - start;
+      for (const { node, start } of nodes) {
+        const nodeEnd = start + node.textContent.length;
+        if (!startNode && index < nodeEnd) {
+          startNode = node;
+          startOffset = index - start;
+        }
+        if (startNode && endIndex <= nodeEnd) {
+          endNode = node;
+          endOffset = endIndex - start;
+          break;
+        }
       }
 
-      if (startNode && endIndex <= nodeEnd) {
-        endNode = node;
-        endOffset = endIndex - start;
-        break;
+      if (!startNode || !endNode) return null;
+      try {
+        const range = document.createRange();
+        range.setStart(startNode, startOffset);
+        range.setEnd(endNode, endOffset);
+        return range;
+      } catch {
+        return null;
+      }
+    };
+
+    // Single occurrence or no position data — use first match
+    if (occurrences.length === 1 || !textPosition) {
+      return buildRange(occurrences[0]);
+    }
+
+    // Multiple occurrences — pick the one closest to the saved position
+    let bestRange = null;
+    let bestDistance = Infinity;
+
+    for (const index of occurrences) {
+      const range = buildRange(index);
+      if (!range) continue;
+
+      const rect = range.getBoundingClientRect();
+      const top = rect.top + window.scrollY;
+      const left = rect.left + window.scrollX;
+      const distance = Math.abs(top - textPosition.top) + Math.abs(left - textPosition.left);
+
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestRange = range;
       }
     }
 
-    if (!startNode || !endNode) return null;
-
-    try {
-      const range = document.createRange();
-      range.setStart(startNode, startOffset);
-      range.setEnd(endNode, endOffset);
-      return range;
-    } catch {
-      return null;
-    }
+    return bestRange;
   }
 
   /**
