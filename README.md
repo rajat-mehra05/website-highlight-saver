@@ -11,7 +11,7 @@ _Watch the extension in action: Select text, save highlights, and navigate betwe
 ## Features
 
 - **Text Selection & Saving**: Select any text on any webpage to save as a highlight
-- **AI Summarization**: Get instant AI-powered summaries using OpenAI
+- **AI Summarization**: Get AI-powered summaries using OpenAI (rate-limited to 5 requests per minute, with summary caching)
 - **Local Storage**: All highlights saved locally using Chrome's storage API
 - **Search & Filter**: Search highlights by text, domain, or title
 - **Export/Import**: Backup and restore highlights as JSON files
@@ -33,11 +33,11 @@ _Watch the extension in action: Select text, save highlights, and navigate betwe
 
    You can use any image editor or online icon generator to create simple highlight-themed icons.
 
-3. **Configure AI (Optional)**: Create an `env.config` file in the root directory:
+3. **Configure AI (Optional)**: Create a `.env.config` file in the root directory:
 
    ```
    OPENAI_API_KEY=your_openai_api_key_here
-   AI_MODEL=gpt-4
+   AI_MODEL=gpt-4o
    AI_MAX_TOKENS=150
    AI_TEMPERATURE=0.8
    AI_TIMEOUT=10000
@@ -59,13 +59,16 @@ _Watch the extension in action: Select text, save highlights, and navigate betwe
 
 1. Fork the repository
 2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+3. Install dependencies: `npm install`
+4. Make your changes
+5. Run tests: `npm test`
+6. Submit a pull request
+
+Tests use Jest with jsdom and are located in the `tests/` directory.
 
 ## 📄 License
 
-This project is open source and available under the MIT License.
+This project is open source and available under the ISC License.
 
 ## 🆘 Support
 
