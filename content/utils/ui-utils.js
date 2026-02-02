@@ -24,12 +24,12 @@ class UIUtils {
     document.body.appendChild(popup);
     this.currentPopup = popup;
 
-    // Auto-remove after 10 seconds as failsafe
+    // Auto-remove as failsafe
     setTimeout(() => {
       if (this.currentPopup === popup) {
         this.removePopup();
       }
-    }, 10000);
+    }, CONSTANTS.POPUP_AUTO_DISMISS);
   }
 
   /**
@@ -54,7 +54,7 @@ class UIUtils {
         position: "absolute",
         top: `${top}px`,
         left: `${Math.max(20, adjustedLeft)}px`,
-        zIndex: "2147483647",
+        zIndex: String(CONSTANTS.Z_INDEX_MAX),
       });
     } else {
       // Fallback positioning
@@ -62,7 +62,7 @@ class UIUtils {
         position: "fixed",
         top: "20px",
         right: "20px",
-        zIndex: "2147483647",
+        zIndex: String(CONSTANTS.Z_INDEX_MAX),
       });
     }
   }
@@ -117,9 +117,8 @@ class UIUtils {
       handler();
     };
 
-    // Add event listeners for better compatibility
+    // Only use click listener — mousedown + click causes double-fire
     button.addEventListener("click", eventHandler, true);
-    button.addEventListener("mousedown", eventHandler, true);
 
     // Store handler for cleanup
     button._highlightHandler = eventHandler;
@@ -140,13 +139,28 @@ class UIUtils {
     // Position it in the same location as the original popup
     this.positionSummaryPopup(summaryPopup);
 
-    // Create summary content
+    // Create summary content using safe DOM construction (no innerHTML with external data)
     const summaryContent = document.createElement("div");
     summaryContent.className = "summary-content";
-    summaryContent.innerHTML = `
-      <div style="font-weight: 600; margin-bottom: 8px; color: #374151;">AI Summary:</div>
-      <div style="font-size: 12px; line-height: 1.4; color: #6b7280;">${summary}</div>
-    `;
+
+    const summaryLabel = document.createElement("div");
+    Object.assign(summaryLabel.style, {
+      fontWeight: "600",
+      marginBottom: "8px",
+      color: "#374151",
+    });
+    summaryLabel.textContent = "AI Summary:";
+
+    const summaryText = document.createElement("div");
+    Object.assign(summaryText.style, {
+      fontSize: "12px",
+      lineHeight: "1.4",
+      color: "#6b7280",
+    });
+    summaryText.textContent = summary;
+
+    summaryContent.appendChild(summaryLabel);
+    summaryContent.appendChild(summaryText);
 
     // Create close button
     const closeButton = document.createElement("button");
@@ -164,13 +178,13 @@ class UIUtils {
     document.body.appendChild(summaryPopup);
     this.currentPopup = summaryPopup;
 
-    // Auto-remove after 15 seconds
+    // Auto-remove after timeout
     setTimeout(() => {
       if (this.currentPopup === summaryPopup) {
         summaryPopup.remove();
         this.currentPopup = null;
       }
-    }, 15000);
+    }, CONSTANTS.SUMMARY_AUTO_DISMISS);
   }
 
   /**
@@ -193,7 +207,7 @@ class UIUtils {
         position: "absolute",
         top: `${top}px`,
         left: `${Math.max(20, adjustedLeft)}px`,
-        zIndex: "2147483647",
+        zIndex: String(CONSTANTS.Z_INDEX_MAX),
         maxWidth: "300px",
         minWidth: "250px",
       });
@@ -203,7 +217,7 @@ class UIUtils {
         position: "fixed",
         top: "20px",
         right: "20px",
-        zIndex: "2147483647",
+        zIndex: String(CONSTANTS.Z_INDEX_MAX),
         maxWidth: "300px",
         minWidth: "250px",
       });
@@ -224,9 +238,7 @@ class UIUtils {
 
       buttons.forEach((btn) => {
         if (btn && btn._highlightHandler) {
-          // Remove both click and mousedown listeners
           btn.removeEventListener("click", btn._highlightHandler, true);
-          btn.removeEventListener("mousedown", btn._highlightHandler, true);
           // Clear the stored handler reference
           btn._highlightHandler = null;
         }
@@ -271,19 +283,19 @@ class UIUtils {
       fontFamily: "Arial, sans-serif",
       fontSize: "12px",
       fontWeight: "bold",
-      zIndex: "2147483646",
+      zIndex: String(CONSTANTS.Z_INDEX_HIGH),
       boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
     });
     feedback.textContent = message;
 
     document.body.appendChild(feedback);
 
-    // Auto-remove after 3 seconds
+    // Auto-remove after timeout
     setTimeout(() => {
       if (feedback.parentNode) {
         feedback.remove();
       }
-    }, 3000);
+    }, CONSTANTS.FEEDBACK_DISMISS);
   }
 
   /**
@@ -312,261 +324,120 @@ class UIUtils {
   }
 
   /**
-   * Create temporary highlight overlay for scroll-to functionality
+   * Remove all temporary scroll-to highlights
    */
-  temporarilyHighlightText(range, text) {
+  removeTemporaryHighlights() {
+    document
+      .querySelectorAll(".highlight-saver-scroll-target")
+      .forEach((el) => { this.unwrapMark(el); });
+    document
+      .querySelectorAll(".highlight-saver-line-highlight")
+      .forEach((el) => { el.remove(); });
+  }
+
+  /**
+   * Unwrap a <mark> element, restoring original DOM structure
+   */
+  unwrapMark(mark) {
+    if (mark && mark.parentNode) {
+      const parent = mark.parentNode;
+      while (mark.firstChild) {
+        parent.insertBefore(mark.firstChild, mark);
+      }
+      parent.removeChild(mark);
+      parent.normalize();
+    }
+  }
+
+  /**
+   * Create temporary inline highlight for scroll-to functionality.
+   * Wraps matched text in a <mark> element for precise inline highlighting,
+   * similar to the browser's native Find-on-page feature.
+   * Falls back to per-line overlay divs if the range spans multiple elements.
+   */
+  temporarilyHighlightSavedText(range, text, duration = 4000) {
     try {
-      // Create a temporary highlight overlay
-      const highlight = document.createElement("div");
-      highlight.className = "highlight-saver-temporary-highlight";
-      Object.assign(highlight.style, {
-        backgroundColor: "rgba(255, 255, 0, 0.3)",
-        border: "2px solid #fbbf24",
-        borderRadius: "2px",
-        position: "absolute",
-        zIndex: "2147483645",
-        pointerEvents: "none",
-      });
+      this.removeTemporaryHighlights();
 
-      // Position the highlight
-      const rect = range.getBoundingClientRect();
-      Object.assign(highlight.style, {
-        top: `${rect.top + window.scrollY}px`,
-        left: `${rect.left + window.scrollX}px`,
-        width: `${rect.width}px`,
-        height: `${rect.height}px`,
-      });
+      // Try to wrap the range in a <mark> for inline highlighting
+      let mark = null;
+      try {
+        mark = document.createElement("mark");
+        mark.className = "highlight-saver-scroll-target";
+        range.surroundContents(mark);
+      } catch {
+        // surroundContents fails on cross-element ranges
+        mark = null;
+      }
 
-      document.body.appendChild(highlight);
-
-      // Remove the highlight after 3 seconds
-      setTimeout(() => {
-        if (highlight.parentNode) {
-          highlight.remove();
-        }
-      }, 3000);
+      if (mark) {
+        // Inline mark succeeded — schedule fade-out and DOM restoration
+        setTimeout(() => {
+          if (mark.parentNode) {
+            mark.classList.add("highlight-saver-scroll-target-fade");
+            setTimeout(() => this.unwrapMark(mark), 500);
+          }
+        }, duration);
+      } else {
+        // Fallback: create per-line overlay divs using getClientRects
+        this.createPerLineHighlight(range, duration);
+      }
     } catch (error) {
       console.error("Failed to create temporary highlight:", error);
     }
   }
 
   /**
-   * Create enhanced temporary highlight for saved highlights with animation
+   * Temporarily add a green border to an existing saved highlight span.
+   * Used when scrolling to a highlight that is already rendered on the page.
    */
-  temporarilyHighlightSavedText(range, text, duration = 4000) {
-    try {
-      // Remove any existing temporary highlights and feedback overlays first
-      const existingHighlights = document.querySelectorAll(
-        ".highlight-saver-temporary-saved, .highlight-saver-instant-feedback"
-      );
-      existingHighlights.forEach((el) => el.remove());
-
-      console.log("Creating temporary highlight for saved text:", text);
-
-      // Also create an immediate simple overlay for instant feedback
-      this.createInstantFeedbackOverlay(text);
-
-      // Wait a bit for any smooth scrolling to settle, then create highlight
-      // Using longer timeout to ensure scroll animation completes
-      setTimeout(() => {
-        try {
-          // Get fresh bounding rect after scroll
-          const rect = range.getBoundingClientRect();
-
-          console.log("Range rect:", rect);
-          console.log("Viewport height:", window.innerHeight);
-          console.log("Scroll position:", window.scrollY);
-
-          // Check if the range is actually visible
-          if (rect.width === 0 || rect.height === 0) {
-            console.warn(
-              "Range has no dimensions, trying alternative highlighting"
-            );
-            this.createFallbackHighlight(text, duration);
-            return;
-          }
-
-          // Create a more prominent temporary highlight overlay for saved highlights
-          const highlight = document.createElement("div");
-          highlight.className = "highlight-saver-temporary-saved";
-
-          // Position the highlight with extra padding for visibility
-          Object.assign(highlight.style, {
-            position: "absolute",
-            top: `${rect.top + window.scrollY - 2}px`,
-            left: `${rect.left + window.scrollX - 2}px`,
-            width: `${rect.width + 4}px`,
-            height: `${rect.height + 4}px`,
-            backgroundColor: "rgba(34, 197, 94, 0.4)", // Green background
-            border: "3px solid #22c55e",
-            borderRadius: "4px",
-            zIndex: "2147483645",
-            pointerEvents: "none",
-            boxShadow: "0 0 20px rgba(34, 197, 94, 0.5)",
-            animation: "highlight-pulse 2s ease-in-out infinite",
-            transition: "all 0.3s ease-in-out",
-          });
-
-          document.body.appendChild(highlight);
-          console.log("Highlight element added to DOM");
-
-          // Add pulsing effect
-          let pulseCount = 0;
-          const pulseInterval = setInterval(() => {
-            pulseCount++;
-            if (pulseCount <= 3) {
-              highlight.style.backgroundColor =
-                pulseCount % 2 === 0
-                  ? "rgba(34, 197, 94, 0.6)"
-                  : "rgba(34, 197, 94, 0.3)";
-              highlight.style.boxShadow =
-                pulseCount % 2 === 0
-                  ? "0 0 30px rgba(34, 197, 94, 0.8)"
-                  : "0 0 10px rgba(34, 197, 94, 0.4)";
-            } else {
-              clearInterval(pulseInterval);
-            }
-          }, 500);
-
-          // Fade out and remove after duration
-          setTimeout(() => {
-            if (highlight.parentNode) {
-              highlight.style.opacity = "0";
-              highlight.style.transform = "scale(0.95)";
-              setTimeout(() => {
-                if (highlight.parentNode) {
-                  highlight.remove();
-                }
-              }, 300);
-            }
-            clearInterval(pulseInterval);
-          }, duration);
-        } catch (innerError) {
-          console.error("Error in delayed highlight creation:", innerError);
-          this.createFallbackHighlight(text, duration);
-        }
-      }, 500); // Wait 500ms for scroll to settle completely
-    } catch (error) {
-      console.error("Failed to create temporary saved highlight:", error);
-      this.createFallbackHighlight(text, duration);
-    }
+  temporarilyBorderSavedHighlight(element, duration = 4000) {
+    element.classList.add("highlight-saver-scroll-border");
+    setTimeout(() => {
+      element.classList.remove("highlight-saver-scroll-border");
+    }, duration);
   }
 
   /**
-   * Fallback highlighting method when range-based highlighting fails
+   * Create per-line highlight overlays using getClientRects.
+   * Unlike getBoundingClientRect (one big box), getClientRects returns
+   * individual rectangles per line, producing a precise highlight.
    */
-  createFallbackHighlight(text, duration = 4000) {
+  createPerLineHighlight(range, duration = 4000) {
     try {
-      console.log("Using fallback highlighting for:", text);
+      const rects = range.getClientRects();
+      const highlights = [];
 
-      // Find all text nodes containing the target text
-      const walker = document.createTreeWalker(
-        document.body,
-        NodeFilter.SHOW_TEXT,
-        null,
-        false
-      );
+      for (let i = 0; i < rects.length; i++) {
+        const rect = rects[i];
+        if (rect.width === 0 || rect.height === 0) continue;
 
-      let textNode;
-      while ((textNode = walker.nextNode())) {
-        if (textNode.textContent.includes(text)) {
-          const parent = textNode.parentElement;
-          if (parent && parent.getBoundingClientRect) {
-            const rect = parent.getBoundingClientRect();
-
-            // Create highlight overlay
-            const highlight = document.createElement("div");
-            highlight.className = "highlight-saver-temporary-saved fallback";
-
-            Object.assign(highlight.style, {
-              position: "absolute",
-              top: `${rect.top + window.scrollY - 5}px`,
-              left: `${rect.left + window.scrollX - 5}px`,
-              width: `${rect.width + 10}px`,
-              height: `${rect.height + 10}px`,
-              backgroundColor: "rgba(34, 197, 94, 0.5)",
-              border: "4px solid #22c55e",
-              borderRadius: "6px",
-              zIndex: "2147483645",
-              pointerEvents: "none",
-              boxShadow: "0 0 30px rgba(34, 197, 94, 0.8)",
-              animation: "savedHighlightAppear 0.5s ease-out forwards",
-            });
-
-            document.body.appendChild(highlight);
-            console.log("Fallback highlight created");
-
-            // Remove after duration
-            setTimeout(() => {
-              if (highlight.parentNode) {
-                highlight.style.opacity = "0";
-                setTimeout(() => {
-                  if (highlight.parentNode) {
-                    highlight.remove();
-                  }
-                }, 300);
-              }
-            }, duration);
-
-            break; // Only highlight the first match
-          }
-        }
+        const div = document.createElement("div");
+        div.className = "highlight-saver-line-highlight";
+        Object.assign(div.style, {
+          position: "absolute",
+          top: `${rect.top + window.scrollY}px`,
+          left: `${rect.left + window.scrollX}px`,
+          width: `${rect.width}px`,
+          height: `${rect.height}px`,
+        });
+        document.body.appendChild(div);
+        highlights.push(div);
       }
-    } catch (error) {
-      console.error("Fallback highlighting also failed:", error);
-    }
-  }
 
-  /**
-   * Create instant feedback overlay while preparing the main highlight
-   */
-  createInstantFeedbackOverlay(text) {
-    try {
-      // Create a visible notification in the viewport
-      const overlay = document.createElement("div");
-      overlay.className = "highlight-saver-instant-feedback";
-
-      Object.assign(overlay.style, {
-        position: "fixed",
-        top: "20px",
-        right: "20px",
-        backgroundColor: "rgba(34, 197, 94, 0.9)",
-        color: "white",
-        padding: "12px 16px",
-        borderRadius: "8px",
-        fontFamily: "Arial, sans-serif",
-        fontSize: "14px",
-        fontWeight: "bold",
-        zIndex: "2147483647",
-        boxShadow: "0 4px 12px rgba(0, 0, 0, 0.3)",
-        animation: "savedHighlightAppear 0.3s ease-out forwards",
-        maxWidth: "300px",
-        wordWrap: "break-word",
-      });
-
-      overlay.innerHTML = `
-        <div style="margin-bottom: 4px;">🎯 Navigating to highlight...</div>
-        <div style="font-size: 12px; opacity: 0.9;">"${
-          text.length > 50 ? text.substring(0, 50) + "..." : text
-        }"</div>
-        <div style="font-size: 10px; margin-top: 4px; opacity: 0.7;">Looking for text overlay...</div>
-      `;
-
-      document.body.appendChild(overlay);
-
-      // Remove after 3 seconds
+      // Schedule fade-out and removal
       setTimeout(() => {
-        if (overlay.parentNode) {
-          overlay.style.opacity = "0";
-          setTimeout(() => {
-            if (overlay.parentNode) {
-              overlay.remove();
-            }
-          }, 300);
-        }
-      }, 3000);
+        highlights.forEach((div) => {
+          if (div.parentNode) {
+            div.classList.add("highlight-saver-line-highlight-fade");
+            setTimeout(() => {
+              if (div.parentNode) div.remove();
+            }, 500);
+          }
+        });
+      }, duration);
     } catch (error) {
-      console.error("Failed to create instant feedback overlay:", error);
+      console.error("Per-line highlight failed:", error);
     }
   }
 
@@ -593,5 +464,5 @@ class UIUtils {
   }
 }
 
-// Make UIUtils globally available
-window.UIUtils = UIUtils;
+window.__highlightSaver = window.__highlightSaver || {};
+window.__highlightSaver.UIUtils = UIUtils;

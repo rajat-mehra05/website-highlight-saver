@@ -102,7 +102,6 @@ class RangeUtils {
 
       // Check if range can be safely surrounded
       if (!this.canSurroundRange(range)) {
-        console.warn("Range cannot be safely surrounded, using fallback");
         return this.markRangeWithFallback(range, highlightId, domUtils);
       }
 
@@ -119,9 +118,7 @@ class RangeUtils {
       span.title = "Saved highlight - Click to view in extension";
 
       return span;
-    } catch (rangeError) {
-      console.warn("surroundContents failed, trying fallback:", rangeError);
-      // Fallback: manually extract and wrap content
+    } catch {
       return this.markRangeWithFallback(range, highlightId, domUtils);
     }
   }
@@ -172,9 +169,9 @@ class RangeUtils {
         throw new Error("Range invalid for fallback marking");
       }
 
-      // Extract the content from the range
-      const contents = range.extractContents();
+      // Capture text before extracting (extractContents collapses the range)
       const textContent = range.toString();
+      const contents = range.extractContents();
 
       // Create the span wrapper
       const span = domUtils.createHighlightSpan({
@@ -234,7 +231,7 @@ class RangeUtils {
         startOffset: range.startOffset,
         endContainer: range.endContainer,
         endOffset: range.endOffset,
-        clonedContents: range.cloneContents(),
+        // clonedContents removed: deep-clones DOM fragment but is never read, wastes memory
       },
       surroundingText: this.getSurroundingTextFromRange(range),
       textPosition: textPosition,
@@ -348,8 +345,8 @@ class RangeUtils {
    */
   getNodeContext(node, textIndex, textLength) {
     const content = node.textContent;
-    const start = Math.max(0, textIndex - 50);
-    const end = Math.min(content.length, textIndex + textLength + 50);
+    const start = Math.max(0, textIndex - CONSTANTS.CONTEXT_CHARS);
+    const end = Math.min(content.length, textIndex + textLength + CONSTANTS.CONTEXT_CHARS);
     return content.substring(start, end);
   }
 
@@ -371,5 +368,5 @@ class RangeUtils {
   }
 }
 
-// Make RangeUtils globally available
-window.RangeUtils = RangeUtils;
+window.__highlightSaver = window.__highlightSaver || {};
+window.__highlightSaver.RangeUtils = RangeUtils;

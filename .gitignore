@@ -1,4 +1,5 @@
 # Environment configuration (contains API keys)
+.env.config
 env.config
 
 # Node.js dependencies (if any)

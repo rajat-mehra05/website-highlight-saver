@@ -5,8 +5,9 @@ class EventUtils {
   constructor() {
     this.selectionTimeout = null;
     this.lastSelectionTime = 0;
-    this.selectionThrottleDelay = 150; // 150ms debounce
-    this.minSelectionInterval = 100; // 100ms throttle
+    this.debounceDelay = CONSTANTS.SELECTION_DEBOUNCE;
+    this.minSelectionInterval = CONSTANTS.SELECTION_THROTTLE;
+    this._initialized = false; // Guard against double-init
   }
 
   /**
@@ -30,7 +31,7 @@ class EventUtils {
       this.selectionTimeout = setTimeout(() => {
         callback(event);
         this.lastSelectionTime = Date.now();
-      }, this.selectionThrottleDelay);
+      }, this.debounceDelay);
     };
   }
 
@@ -78,6 +79,11 @@ class EventUtils {
    * Bind all necessary events for the highlight saver
    */
   bindHighlightEvents(handlers) {
+    // Guard against double initialization (e.g. extension reload, navigation quirks).
+    // Uses a global flag so a second HighlightSaver instance (new EventUtils) is also blocked.
+    if (window.__highlightSaverEventsInitialized) return;
+    window.__highlightSaverEventsInitialized = true;
+
     const {
       onTextSelection,
       onOutsideClick,
@@ -87,11 +93,12 @@ class EventUtils {
       onMessage,
     } = handlers;
 
-    // Text selection events with debouncing
+    // Text selection events with debouncing (includes touchend for tablet support)
     const debouncedSelection =
       this.createDebouncedSelectionHandler(onTextSelection);
     document.addEventListener("mouseup", debouncedSelection, { passive: true });
     document.addEventListener("keyup", debouncedSelection, { passive: true });
+    document.addEventListener("touchend", debouncedSelection, { passive: true });
 
     // Outside click handler
     if (onOutsideClick) {
@@ -114,7 +121,6 @@ class EventUtils {
       const cleanupHandler = this.createCleanupHandler(onCleanup);
       window.addEventListener("beforeunload", cleanupHandler);
       window.addEventListener("pagehide", cleanupHandler);
-      window.addEventListener("unload", cleanupHandler);
     }
 
     // Chrome extension message listener
@@ -131,7 +137,7 @@ class EventUtils {
     const selectedText = selection.toString().trim();
 
     // Validate selection
-    if (selectedText.length > 0 && selectedText.length < 1000) {
+    if (selectedText.length > 0 && selectedText.length < CONSTANTS.MAX_TEXT_LENGTH) {
       callback(selection, selectedText, event);
     } else if (selectedText.length === 0) {
       // Handle empty selection
@@ -180,26 +186,50 @@ class EventUtils {
   }
 
   /**
-   * Scroll to text with smooth animation
+   * Scroll to text with smooth animation.
+   * When textPosition is provided, picks the occurrence closest to it.
    */
-  scrollToText(textNodes, text, callback) {
+  scrollToText(textNodes, text, callback, textPosition = null) {
     if (textNodes.length === 0) return false;
 
-    // Find the best match
     let bestMatch = textNodes[0];
-    let bestScore = 0;
 
-    textNodes.forEach((textNode) => {
-      const content = textNode.textContent;
-      const index = content.indexOf(text);
-      if (index !== -1) {
-        const score = text.length / content.length;
-        if (score > bestScore) {
-          bestScore = score;
-          bestMatch = textNode;
+    if (textPosition) {
+      // Use position proximity to pick the right occurrence
+      let bestDistance = Infinity;
+      textNodes.forEach((textNode) => {
+        const content = textNode.textContent;
+        const index = content.indexOf(text);
+        if (index === -1) return;
+        try {
+          const range = document.createRange();
+          range.setStart(textNode, index);
+          range.setEnd(textNode, index + text.length);
+          const rect = range.getBoundingClientRect();
+          const top = rect.top + window.scrollY;
+          const left = rect.left + window.scrollX;
+          const distance = Math.abs(top - textPosition.top) + Math.abs(left - textPosition.left);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestMatch = textNode;
+          }
+        } catch { /* skip */ }
+      });
+    } else {
+      // Fallback: pick node where the text takes up the most of the content
+      let bestScore = 0;
+      textNodes.forEach((textNode) => {
+        const content = textNode.textContent;
+        const index = content.indexOf(text);
+        if (index !== -1) {
+          const score = text.length / content.length;
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = textNode;
+          }
         }
-      }
-    });
+      });
+    }
 
     // Create range and scroll to it
     try {
@@ -210,21 +240,15 @@ class EventUtils {
       range.setStart(bestMatch, index);
       range.setEnd(bestMatch, index + text.length);
 
-      // Get the bounding rect and scroll
-      const rect = range.getBoundingClientRect();
-      const scrollTop = rect.top + window.scrollY - 100; // 100px offset
-
-      window.scrollTo({
-        top: scrollTop,
-        behavior: "smooth",
-      });
+      // Use scrollIntoView on the parent element for reliable centering
+      const scrollTarget = bestMatch.parentElement || bestMatch;
+      scrollTarget.scrollIntoView({ behavior: "smooth", block: "center" });
 
       // Execute callback with range for highlighting after scroll settles
       if (callback) {
-        // Wait for smooth scroll to finish before highlighting
         setTimeout(() => {
           callback(range, text);
-        }, 300);
+        }, CONSTANTS.SCROLL_CALLBACK_DELAY);
       }
 
       return true;
@@ -269,8 +293,13 @@ class EventUtils {
       if (message.action === "cleanup" && handlers.cleanup) {
         handlers.cleanup();
         sendResponse({ success: true });
+      } else if (message.action === "highlightsUpdated" && handlers.highlightsUpdated) {
+        handlers.highlightsUpdated();
+        sendResponse({ success: true });
+      } else if (message.action === "scrollToHighlight" && handlers.scrollToHighlight) {
+        handlers.scrollToHighlight(message.text, message.textPosition, message.highlightId);
+        sendResponse({ success: true });
       }
-      // Add more message handlers as needed
     };
   }
 
@@ -286,5 +315,5 @@ class EventUtils {
   }
 }
 
-// Make EventUtils globally available
-window.EventUtils = EventUtils;
+window.__highlightSaver = window.__highlightSaver || {};
+window.__highlightSaver.EventUtils = EventUtils;

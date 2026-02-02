@@ -3,8 +3,7 @@
 
 class DOMUtils {
   constructor() {
-    this.textNodeCache = new Map();
-    this.cacheValidityDuration = 30000; // 30 seconds
+    // Text node cache removed — use CacheManager as single source of truth
   }
 
   /**
@@ -14,7 +13,7 @@ class DOMUtils {
     const textNodes = [];
     const searchLength = searchText.length;
 
-    if (searchLength < 3) {
+    if (searchLength < CONSTANTS.SHORT_TEXT_THRESHOLD) {
       // For short text, use TreeWalker with early termination
       const walker = document.createTreeWalker(
         body,
@@ -32,7 +31,7 @@ class DOMUtils {
 
       let node;
       let foundCount = 0;
-      const maxMatches = 10;
+      const maxMatches = CONSTANTS.SHORT_TEXT_MAX_MATCHES;
 
       while ((node = walker.nextNode()) && foundCount < maxMatches) {
         if (node.textContent.includes(searchText)) {
@@ -47,7 +46,7 @@ class DOMUtils {
       for (const textNode of allTextNodes) {
         if (textNode.textContent.includes(searchText)) {
           textNodes.push(textNode);
-          if (textNodes.length >= 5) break;
+          if (textNodes.length >= CONSTANTS.LONG_TEXT_MAX_MATCHES) break;
         }
       }
     }
@@ -56,19 +55,9 @@ class DOMUtils {
   }
 
   /**
-   * Get all text nodes with caching
+   * Get all text nodes (no internal caching — CacheManager handles caching)
    */
   getAllTextNodes(container = document.body) {
-    const cacheKey = "all_text_nodes";
-    const now = Date.now();
-
-    if (this.textNodeCache.has(cacheKey)) {
-      const cached = this.textNodeCache.get(cacheKey);
-      if (now - cached.timestamp < this.cacheValidityDuration) {
-        return cached.nodes;
-      }
-    }
-
     const textNodes = [];
     const walker = document.createTreeWalker(
       container,
@@ -89,12 +78,6 @@ class DOMUtils {
     while ((node = walker.nextNode())) {
       textNodes.push(node);
     }
-
-    // Cache the results
-    this.textNodeCache.set(cacheKey, {
-      nodes: textNodes,
-      timestamp: now,
-    });
 
     return textNodes;
   }
@@ -119,8 +102,7 @@ class DOMUtils {
     }
 
     span.title = "Saved highlight - Click to view in extension";
-    span.style.cssText =
-      "background-color: #ffff99; padding: 1px 2px; border-radius: 2px;";
+    // Styling handled entirely by .highlight-saver-saved CSS class (no conflicting inline styles)
 
     return span;
   }
@@ -190,22 +172,102 @@ class DOMUtils {
   }
 
   /**
+   * Find a Range for text that may span across multiple DOM elements.
+   * Walks all text nodes, concatenates their content, locates the search
+   * string, then maps the character offsets back to actual DOM nodes.
+   * When textPosition is provided and multiple occurrences exist,
+   * picks the one closest to the saved position.
+   */
+  findTextRangeAcrossElements(searchText, root = document.body, textPosition = null) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    let concat = "";
+
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      nodes.push({ node, start: concat.length });
+      concat += node.textContent;
+    }
+
+    // Find all occurrences of the search text
+    const occurrences = [];
+    let searchFrom = 0;
+    while (searchFrom < concat.length) {
+      const index = concat.indexOf(searchText, searchFrom);
+      if (index === -1) break;
+      occurrences.push(index);
+      searchFrom = index + 1;
+    }
+
+    if (occurrences.length === 0) return null;
+
+    // Build a range for a given character index
+    const buildRange = (index) => {
+      const endIndex = index + searchText.length;
+      let startNode, startOffset, endNode, endOffset;
+
+      for (const { node, start } of nodes) {
+        const nodeEnd = start + node.textContent.length;
+        if (!startNode && index < nodeEnd) {
+          startNode = node;
+          startOffset = index - start;
+        }
+        if (startNode && endIndex <= nodeEnd) {
+          endNode = node;
+          endOffset = endIndex - start;
+          break;
+        }
+      }
+
+      if (!startNode || !endNode) return null;
+      try {
+        const range = document.createRange();
+        range.setStart(startNode, startOffset);
+        range.setEnd(endNode, endOffset);
+        return range;
+      } catch {
+        return null;
+      }
+    };
+
+    // Single occurrence or no position data — use first match
+    if (occurrences.length === 1 || !textPosition) {
+      return buildRange(occurrences[0]);
+    }
+
+    // Multiple occurrences — pick the one closest to the saved position
+    let bestRange = null;
+    let bestDistance = Infinity;
+
+    for (const index of occurrences) {
+      const range = buildRange(index);
+      if (!range) continue;
+
+      const rect = range.getBoundingClientRect();
+      const top = rect.top + window.scrollY;
+      const left = rect.left + window.scrollX;
+      const distance = Math.abs(top - textPosition.top) + Math.abs(left - textPosition.left);
+
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestRange = range;
+      }
+    }
+
+    return bestRange;
+  }
+
+  /**
    * Get surrounding context for a node
    */
   getNodeContext(node, textIndex, textLength) {
     const content = node.textContent;
-    const start = Math.max(0, textIndex - 50);
-    const end = Math.min(content.length, textIndex + textLength + 50);
+    const start = Math.max(0, textIndex - CONSTANTS.CONTEXT_CHARS);
+    const end = Math.min(content.length, textIndex + textLength + CONSTANTS.CONTEXT_CHARS);
     return content.substring(start, end);
   }
 
-  /**
-   * Clear text node cache
-   */
-  clearCache() {
-    this.textNodeCache.clear();
-  }
 }
 
-// Make DOMUtils globally available
-window.DOMUtils = DOMUtils;
+window.__highlightSaver = window.__highlightSaver || {};
+window.__highlightSaver.DOMUtils = DOMUtils;
