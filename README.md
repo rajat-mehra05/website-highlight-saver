@@ -68,7 +68,7 @@ Tests use Jest with jsdom and are located in the `tests/` directory.
 
 ## 📄 License
 
-This project is open source and available under the ISC License.
+This project is open source and available under the MIT License.
 
 ## 🆘 Support
 
