@@ -51,6 +51,9 @@ const chromeMock = {
 
 global.chrome = chromeMock;
 
+// Mock Service Worker API used by background.js
+global.importScripts = jest.fn();
+
 // Initialize the namespace so require()'d utility files can register into it
 global.window = global.window || globalThis;
 global.window.__highlightSaver = global.window.__highlightSaver || {};
