@@ -350,8 +350,13 @@ class HighlightSaver {
   scrollToAndHighlightText(text, positionData, highlightId) {
     try {
       // 1. Try to find the already-rendered saved highlight span by ID
-      const savedSpan = highlightId
-        ? document.querySelector(`.highlight-saver-saved[data-highlight-id="${highlightId}"]`)
+      const escapedId = highlightId
+        ? (typeof CSS !== "undefined" && CSS.escape
+          ? CSS.escape(highlightId)
+          : highlightId.replace(/([^\w-])/g, "\\$1"))
+        : null;
+      const savedSpan = escapedId
+        ? document.querySelector(`.highlight-saver-saved[data-highlight-id="${escapedId}"]`)
         : null;
 
       if (savedSpan) {

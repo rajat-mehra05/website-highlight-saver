@@ -445,7 +445,7 @@ class BackgroundService {
           Authorization: `Bearer ${config.OPENAI_API_KEY}`,
         },
         body: JSON.stringify({
-          model: config.AI_MODEL || "gpt-4",
+          model: config.AI_MODEL || "gpt-4o",
           messages: [
             { role: "system", content: PROMPTS.SYSTEM_SUMMARY },
             { role: "user", content: highlightContent },
